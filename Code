@@ -1,0 +1,356 @@
+import logging
+import numpy as np
+import datetime
+import time
+import os
+import cv2
+import pytesseract
+import pyodbc
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
+logging.basicConfig(filename='logfile.log', level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Set the default Tesseract path based on your development environment
+default_tesseract_path = r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"
+# Override with an environment variable if set
+custom_tesseract_path = os.getenv("TESSERACT_PATH", default_tesseract_path)
+# Set the Tesseract path
+pytesseract.pytesseract.tesseract_cmd = custom_tesseract_path
+
+
+class MyHandler(FileSystemEventHandler):
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        elif event.src_path.lower().endswith(".bmp"):
+            logging.info(f"New .bmp file created: {event.src_path}")
+            print(f"\nNew .bmp file created: {event.src_path}")
+
+            # Wait until the file is ready for reading
+            max_attempts = 10
+            for attempt in range(max_attempts):
+                try:
+                    with open(event.src_path, 'rb'):
+                        break  # File is ready, exit the loop
+                except IOError:
+                    if attempt == max_attempts - 1:
+                        print(f"Error: Could not open or find the image after {max_attempts} attempts.")
+                        return
+
+                    # Wait for a short time before the next attempt
+                    time.sleep(0.5)
+
+            # delay
+            time.sleep(1)
+            try:
+                process_image(event.src_path)
+            except Exception as e:
+                print(f"Error processing image: {str(e)}")
+
+
+def modified(value):
+    str_value = str(value)
+    if '0.007' in str_value:
+        corrected_value = 0.00
+        return corrected_value
+    elif str_value.startswith('13'):
+        corrected_value = '19' + str_value[2:]
+        return corrected_value
+    else:
+        return value
+
+
+def apply_correction(value):
+    str_value = str(value)
+    # Check if the value starts with '3' and replace it with '9'
+    if '81.d' in str_value or 'a4.' in str_value:
+        corrected_value = 91.14
+        return corrected_value
+    elif 'S1.41' in str_value:
+        corrected_value = 91.41
+        return corrected_value
+    elif 'S1.17' in str_value:
+        corrected_value = 91.17
+        return corrected_value
+    elif '—8F71' in value:
+        corrected_value = 87.71
+        return corrected_value
+    elif '.' in str_value and str_value.startswith('6'):
+        # Check if the value has 3 digits before the decimal point
+        if len(str_value.split('.')[0]) == 3:
+            # Remove the first digit and keep the rest of the value
+            corrected_value = str_value[1:]
+            return corrected_value
+    elif '.' in str_value and str_value.startswith('3'):
+        corrected_value = '9' + str_value[1:]
+        return corrected_value
+    elif '.' in str_value and str_value.startswith('B'):
+        corrected_value = '8' + str_value[1:]
+        return corrected_value
+    elif str_value.startswith('83'):
+        corrected_value = '89' + str_value[2:]
+        return corrected_value
+    elif str_value.startswith('s2'):
+        corrected_value = '92' + str_value[2:]
+        return corrected_value
+    elif '0.007' in str_value:
+        corrected_value = 0.00
+        return corrected_value
+    else:
+        return value
+
+
+def decimal_correction(value):
+    # Check if the value already contains a decimal point
+    if '.' in str(value):
+        # If it already has a '.', return the value as is
+        return value
+    elif 'BFF' in value:
+        corrected_value = 87.17
+        return corrected_value
+    elif '—8F71' in value:
+        corrected_value = 87.71
+        return corrected_value
+    elif str(value):
+        # If it doesn't have a '.', add '.' after the first two digits
+        correct_value = f"{value[:2]}.{value[2:]}"
+        return correct_value
+    return value
+
+
+def process_image(image_path):
+    conn = None
+    image_path = os.path.normpath(image_path)
+    try:
+        # Extract file name
+        file_name = os.path.basename(image_path)
+        trimmed_filename = file_name.rstrip('.bmp')
+
+        # Connect to the Microsoft SQL Server database # 192.168.1.5;' 'SERVER=45.116.2.234;'
+        connection_string = 'DRIVER={SQL Server};' \
+                            'SERVER=192.168.1.5;' \
+                            'DATABASE=Dyna_Himcast;' \
+                            'PORT=1433;' \
+                            'UID=sa;' \
+                            'PWD=knvhn;' \
+                            'TrustServerCertificate=yes;'
+
+        conn = pyodbc.connect(connection_string)
+        cursor = conn.cursor()
+
+        # Fetch date and item_name from the 'Spectro' table based on the heat number
+        cursor.execute("SELECT date, item_name, customer_name, grade FROM Spectro WHERE heat_number = ?",
+                       (trimmed_filename,))
+        row = cursor.fetchone()
+
+        if row:
+            date_from_database = row.date
+            item_name_from_database = row.item_name
+            customer_name_from_database = row.customer_name
+            grade_from_database = row.grade
+            formatted_date = datetime.datetime.strptime(date_from_database, "%Y-%m-%d").strftime("%d-%m-%Y")
+
+            print(f"\nHeat number: {trimmed_filename}")
+            print(f"Date: {formatted_date}")
+            print(f"Grade: {grade_from_database}")
+            print(f"Customer Name: {customer_name_from_database}")
+            print(f"Item Name: {item_name_from_database}")
+
+            # Image processing code...
+            image = cv2.imread(image_path)
+
+            if image is None:
+                logging.error(f"Could not open or find the image: {image_path}")
+                print(f"Could not open or find the image: {image_path}")
+                return  # Skip processing if the image cannot be opened
+            image = cv2.imread(image_path)
+
+            # Define the coordinates of the ROI
+            # nodule
+            x1, y1 = 114, 855  # Top-left corner
+            x2, y2 = 157, 872  # Bottom-right corner
+
+            # Avg Nodularity 180, 854 / 218 ,870
+            x3, y3 = 180, 855  # Top-left corner
+            x4, y4 = 218, 870
+
+            # pearlite
+            x5, y5 = 490, 857  # Top-left corner
+            x6, y6 = 525, 873
+
+            # ferrite
+            x7, y7 = 565, 856  # Top-left corner
+            x8, y8 = 599, 872
+
+            # Extract the ROI from the image
+            roi1 = image[y1:y2, x1:x2]
+            roi2 = image[y3:y4, x3:x4]
+            roi3 = image[y5:y6, x5:x6]
+            roi4 = image[y7:y8, x7:x8]
+
+            # ------------------------------------------------------------------------------- #
+            # NODULE COUNT
+            # Convert the ROI to grayscale
+            gray_roi1 = cv2.cvtColor(roi1, cv2.COLOR_BGR2GRAY)
+
+            # Threshold the image
+            _, thresholded_roi1 = cv2.threshold(gray_roi1, 127, 255, cv2.THRESH_BINARY)
+
+            # Use Tesseract to extract text from the ROI
+            nodule_count_text = pytesseract.image_to_string(thresholded_roi1, config='--oem 1 --psm 8')
+            cleaned_nodule_count_text = nodule_count_text.replace("‘", "").replace(",", "").replace("|", "").replace(
+                "—", "").replace("(", "").replace("-", "")
+
+            # ------------------------------------------------------------------------------- #
+            # AVG NODULARITY
+            # Convert the ROI to grayscale
+            gray_roi2 = cv2.cvtColor(roi2, cv2.COLOR_BGR2GRAY)
+
+            # Threshold the image
+            _, thresholded_roi2 = cv2.threshold(gray_roi2, 127, 255, cv2.THRESH_BINARY)
+
+            # Use Tesseract to extract text from the ROI
+            avg_nodularity_text = pytesseract.image_to_string(thresholded_roi2, config='--psm 3')
+            cleaned_average_nodularity_text = avg_nodularity_text.replace("‘", "").replace(",", "").replace("|",
+                                                                                                            "").replace(
+                "—", "").replace("(", "").replace("-", "")
+            corrected_nodularity = decimal_correction(cleaned_average_nodularity_text)
+
+            # ------------------------------------------------------------------------------- #
+            # PEARLITE %
+            # Convert the ROI to grayscale
+            gray_roi3 = cv2.cvtColor(roi3, cv2.COLOR_BGR2GRAY)
+
+            # Threshold the image
+            _, thresholded_roi3 = cv2.threshold(gray_roi3, 127, 255, cv2.THRESH_BINARY)
+
+            # Use Tesseract to extract text from the ROI
+            pearlite_text = pytesseract.image_to_string(thresholded_roi3, config='--psm 6')
+            cleaned_pearlite_text = pearlite_text.replace("‘", "").replace(",", "").replace("|", "").replace("—",
+                                                                                                             "").replace(
+                "(", "").replace("-", "")
+
+            # ------------------------------------------------------------------------------- #
+            # FERRITE %
+            # Convert the ROI to grayscale
+            gray_roi4 = cv2.cvtColor(roi4, cv2.COLOR_BGR2GRAY)
+
+            # Threshold the image
+            _, thresholded_roi4 = cv2.threshold(gray_roi4, 127, 255, cv2.THRESH_BINARY)
+
+            # Use Tesseract to extract text from the ROI
+            ferrite_text = pytesseract.image_to_string(thresholded_roi4, config='--psm 6')
+            cleaned_ferrite_text = ferrite_text.replace("‘", "").replace(",", "").replace("|", "").replace("—",
+                                                                                                           "").replace(
+                "(", "").replace("-", "")
+
+            # ------------------------------------------------------------------------------- #
+            # POST PROCESSING
+            corrected_pearlite = decimal_correction(cleaned_pearlite_text)
+            corrected_ferrite = decimal_correction(cleaned_ferrite_text)
+
+            try:
+                corrected_pearlite = float(corrected_pearlite)
+            except ValueError:
+                # If pearlite is a string, subtract its value from 100
+                corrected_pearlite = 100 - float(corrected_ferrite)
+
+            try:
+                corrected_ferrite = float(corrected_ferrite)
+            except ValueError:
+                # If ferrite is a string, subtract its value from 100
+                corrected_ferrite = 100 - float(corrected_pearlite)
+
+            corrected_nodule_count = modified(cleaned_nodule_count_text)
+            # corrected_average_nodularity_text = apply_correction(corrected_nodularity)
+
+            # ------------------------------------------------------------------------------- #
+
+            try:
+                nodule_count_value = float(corrected_nodule_count)
+                if nodule_count_value == 0.00:
+                    corrected_average_nodularity_text = 0.00
+                else:
+                    corrected_average_nodularity_text = apply_correction(corrected_nodularity)
+
+                average_nodularity_value = float(corrected_average_nodularity_text)
+                pearlite_value = round(float(corrected_pearlite), 2)
+                ferrite_value = round(float(corrected_ferrite), 2)
+            except ValueError:
+                print("\nError converting one or more values to float. Skipping insertion.")
+                nodule_count_value = average_nodularity_value = pearlite_value = ferrite_value = None
+
+            # Display the OCR results
+            print("\nNodule Count = ", nodule_count_value, end='')
+            print("\nAverage Nodularity = ", average_nodularity_value, end='')
+            print("\nPearlite % = ", pearlite_value, end='')
+            print("\nFerrite % = ", ferrite_value, end='')
+
+            # # Print the extracted text
+            # print("\n---BEFORE---""\nNodule count:", nodule_count_text)
+            # print("Avg Nodularity:", avg_nodularity_text)
+            # print("pearlite %:", pearlite_text)
+            # print("ferrite %:", ferrite_text)
+
+            # Display the original image with the ROI highlighted
+            # cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Draw a green rectangle around the ROI
+            # cv2.rectangle(image, (x3, y3), (x4, y4), (0, 255, 0), 2)  # Draw a green rectangle around the ROI2
+            # cv2.rectangle(image, (x5, y5), (x6, y6), (0, 255, 0), 2)  # Draw a green rectangle around the ROI3
+            # cv2.rectangle(image, (x7, y7), (x8, y8), (0, 255, 0), 2)
+            # cv2.imshow("Original Image with ROI", image)
+            # cv2.waitKey(10000)
+            # cv2.destroyAllWindows()
+
+            # Insert data into the Microsoft SQL Server database
+            cursor.execute(
+                "INSERT INTO MICRO (heat_number, date, customer_name, part_name, grade, nodule_count, average_nodularity, pearlite, ferrite)"
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (trimmed_filename, date_from_database, customer_name_from_database, item_name_from_database,
+                 grade_from_database, nodule_count_value,
+                 average_nodularity_value, pearlite_value, ferrite_value))
+            conn.commit()
+    except pyodbc.Error as ex:
+        logging.error(f"Error accessing the database: {ex}")
+        print(f"\nError accessing the database: {ex}")
+    except Exception as e:
+        logging.error(f"An error occurred: {str(e)}")
+        print(f"\nAn error occurred: {str(e)}")
+    finally:
+        if conn:
+            conn.close()
+            logging.info("Database insertion done.")
+            print(f"\nDatabase insertion done.\nScript running...watching for new .bmp files")
+
+
+if __name__ == "__main__":
+    folder_to_watch = r"\\192.168.1.71\micro reports"
+    # r"\\192.168.1.71\micro reports" r"C:\Users\PEPE\Desktop\Spectro"
+
+    logging.info("Script is running... watching for new .bmp files...")
+
+    print("Script is running... watching for new .bmp files...")
+
+    event_handler = MyHandler()
+    observer = Observer(3600)
+    observer.schedule(event_handler, path=folder_to_watch, recursive=False)
+    observer.start()
+
+    try:
+        while True:
+            time.sleep(600)  # Wait for 10 minute
+            observer.stop()
+            observer.join()
+
+            print("Stopped watching for new .bmp files. Waiting for next iteration...")
+
+            time.sleep(3)  # Wait for 3 seconds
+
+            observer = Observer()
+            observer.schedule(event_handler, path=folder_to_watch, recursive=False)
+            observer.start()
+
+            print("Started watching for new .bmp files again...")
+    except KeyboardInterrupt:
+        logging.info("Script terminated by user.")
+        print("Script terminated by user.")
